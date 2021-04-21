@@ -7,7 +7,7 @@ import math
 import random
 import string
 
-class LetterHiddenMarkovModel():
+class HiddenMarkovModel():
     """
     This class defines an HMM.
     """
@@ -297,3 +297,146 @@ class LetterHiddenMarkovModel():
 
         return log_probs_k_train, log_probs_k_test, emission_probs_a_s0, emission_probs_a_s1, emission_probs_n_s0, emission_probs_n_s1, emission_probs_final_s0, emission_probs_final_s1
         #return log_probs_k_train, log_probs_k_test, emission_probs_a_s0, emission_probs_a_s1, emission_probs_a_s2, emission_probs_a_s3, emission_probs_n_s0, emission_probs_n_s1, emission_probs_n_s2, emission_probs_n_s3, emission_probs_final_s0, emission_probs_final_s1, emission_probs_final_s2, emission_probs_final_s3
+
+
+
+
+        # First silence HMM
+            alphas[0,lbl_id] = a[0] + arc_probs[0]
+            alphas[1,lbl_id] = logsumexp(a[0] + arc_probs[1], a[1] + arc_probs[4], a[2] + arc_probs[8], a[3] + arc_probs[12])
+            alphas[2,lbl_id] = logsumexp(a[0] + arc_probs[2], a[1] + arc_probs[5], a[2] + arc_probs[9], a[3] + arc_probs[13])
+            alphas[3,lbl_id] = logsumexp(a[0] + arc_probs[3], a[1] + arc_probs[6], a[2] + arc_probs[10], a[3] + arc_probs[14])
+            alphas[4,lbl_id] = logsumexp(a[1] + arc_probs[7], a[2] + arc_probs[11], a[3] + arc_probs[15], a[4] + arc_probs[16])
+
+            # Intermediate letter HMMs
+            j = 5 # alpha idx tracker
+            k = 0 # null prob idx tracker
+            m = 17 # arc prob idx tracker
+            for x in range(self.num_letters):
+                alphas[j,lbl_id] = logsumexp(alphas[j-1,lbl_id] + self.null[k], a[j] + arc_probs[m])
+                alphas[j+1,lbl_id] = logsumexp(a[j] + arc_probs[m+1], a[j+1] + arc_probs[m+2])
+                alphas[j+2,lbl_id] = logsumexp(a[j+1] + arc_probs[m+3], a[j+2] + arc_probs[m+4])
+                j+=3
+                k+=1
+                m+=5
+
+            # Final silence HMM
+            alphas[j,lbl_id] = logsumexp(alphas[j-1,lbl_id] + self.null[k], a[j] + arc_probs[m])
+            alphas[j+1,lbl_id] = logsumexp(a[j] + arc_probs[m+1], a[j+1] + arc_probs[m+4], a[j+2] + arc_probs[m+8], a[j+3] + arc_probs[m+12])
+            alphas[j+2,lbl_id] = logsumexp(a[j] + arc_probs[m+2], a[j+1] + arc_probs[m+5], a[j+2] + arc_probs[m+9], a[j+3] + arc_probs[m+13])
+            alphas[j+3,lbl_id] = logsumexp(a[j] + arc_probs[m+3], a[j+1] + arc_probs[m+6], a[j+2] + arc_probs[m+10], a[j+3] + arc_probs[m+14])
+            alphas[j+4,lbl_id] = logsumexp(a[j+1] + arc_probs[m+7], a[j+2] + arc_probs[m+11], a[j+3] + arc_probs[m+15], a[j+4] + arc_probs[m+16])
+
+            #alphas[8] = logsumexp(alphas[7] + self.null[1], a[8] + arc_probs[22])
+            #.........
+            # First silence HMM
+            j = self.num_states # beta idx tracker
+            k =  len(self.null) - 1 # null prob idx tracker
+            m = self.num_arcs # arc prob idx tracker
+            betas[j,lbl_id] = b[j] + arc_probs[m]
+            betas[j-1,lbl_id] = logsumexp(b[j] + arc_probs[m-1], b[j-1] + arc_probs[m-4], b[j-2] + arc_probs[m-8], b[j-3] + arc_probs[m-12])
+            betas[j-2,lbl_id] = logsumexp(b[j] + arc_probs[m-2], b[j-1] + arc_probs[m-5], b[j-2] + arc_probs[m-9], b[j-3] + arc_probs[m-13])
+            betas[j-3,lbl_id] = logsumexp(b[j] + arc_probs[m-3], b[j-1] + arc_probs[m-6], b[j-2] + arc_probs[m-10], b[j-3] + arc_probs[m-14])
+            betas[j-4,lbl_id] = logsumexp(b[j-1] + arc_probs[m-7], b[j-2] + arc_probs[m-11], b[j-3] + arc_probs[m-15], b[j-4] + arc_probs[m-16])
+            m-=17
+            j-=5
+
+            # Intermediate letter HMMs
+            for x in range(self.num_letters):
+                betas[j,lbl_id] = logsumexp(betas[j+1,lbl_id] + self.null[k], b[j] + arc_probs[m])
+                betas[j-1,lbl_id] = logsumexp(b[j] + arc_probs[m-1], b[j-1] + arc_probs[m-2])
+                betas[j-2,lbl_id] = logsumexp(b[j-1] + arc_probs[m-3], b[j-2] + arc_probs[m-4])
+                j-=3
+                k-=1
+                m-=5
+
+            # Final silence HMM
+            betas[j,lbl_id] = logsumexp(alphas[j+1,lbl_id] + self.null[k], b[j] + arc_probs[m])
+            betas[j-1,lbl_id] = logsumexp(b[j] + arc_probs[m-1], b[j-1] + arc_probs[m-4], b[j-2] + arc_probs[m-8], b[j-3] + arc_probs[m-12])
+            betas[j-2,lbl_id] = logsumexp(b[j] + arc_probs[m-2], b[j-1] + arc_probs[m-5], b[j-2] + arc_probs[m-9], b[j-3] + arc_probs[m-13])
+            betas[j-3,lbl_id] = logsumexp(b[j] + arc_probs[m-3], b[j-1] + arc_probs[m-6], b[j-2] + arc_probs[m-10], b[j-3] + arc_probs[m-14])
+            betas[j-4,lbl_id] = logsumexp(b[j-1] + arc_probs[m-7], b[j-2] + arc_probs[m-11], b[j-3] + arc_probs[m-15], b[j-4] + arc_probs[m-16])
+
+
+
+            j=0 # arc idx tracker
+            m=0 # state idx tracker
+            n=0 # beta idx tracker
+
+            uncollected[j,lbl_id] = la[m] + arc_probs[j] + b[n]
+            uncollected[j+1,lbl_id] = la[m] + arc_probs[j+1] + b[n+1]
+            uncollected[j+2,lbl_id] = la[m] + arc_probs[j+2] + b[n+2]
+            uncollected[j+3,lbl_id] = la[m] + arc_probs[j+3] + b[n+3]
+            j+=4
+            n+=1
+
+            for m in range(1,5):
+                uncollected[j,lbl_id] = la[m] + arc_probs[j] + b[n]
+                uncollected[j+1,lbl_id] = la[m] + arc_probs[j+1] + b[n+1]
+                uncollected[j+2,lbl_id] = la[m] + arc_probs[j+2] + b[n+2]
+                uncollected[j+3,lbl_id] = la[m] + arc_probs[j+3] + b[n+3]
+                j+=4
+
+            uncollected[j,lbl_id] = la[m] + arc_probs[j] + b[m]
+            uncollected_null[0,lbl_id] = alphas[m,lbl_id+1]] + self.null[0] + b[m+1]
+            j+=1
+            
+            n=5
+            m=5
+            for m in range(5,self.num_arcs-1):
+                uncollected[j,lbl_id] = la[m] + arc_probs[j] + b[n]
+                uncollected[j+1,lbl_id] = la[m] + arc_probs[j+1] + b[n+1]
+                j+=2
+                n+=1
+            uncollected[j,lbl_id] = la[m] + arc_probs[j] + b[m]
+
+            m=4
+            for k in range(len(self.null)):
+                uncollected_null[k,lbl_id] = alphas[m,lbl_id+1]] + self.null[k] + b[m+1]
+                m+=3
+
+
+        # Normalize with marginal prob, unnecessary
+        #uncollected -= log_marginal_prob
+
+        # Should be length self.num_arcs
+        transition_counts = logsumexp(uncollected, axis=1)
+        null_counts = logsumexp(uncollected_null, axis=1)
+        # Normalize
+        transition_counts[0:16] -= np.flatten(logsumexpsoftmax(transition_counts[0:16].reshape(4,4), axis=1))
+        transition_counts[16] -= transition_counts[16], null_counts[0]
+
+        j=17
+        for x in range(self.num_letters):
+            transition_counts[j:j+4] -= np.flatten(softmax(transition_counts[j:j+4].reshape(2,2), axis=1))
+            transition_counts[j+5]
+            null_counts[k]
+            j+=2
+
+        self.transition = transition_counts
+        self.null = null_counts
+
+        # Collect counts for each transition, output should be same size as self.transition
+        # This sums counts for each transition over all characters
+        transition_counts = logsumexp(uncollected, axis=2)
+        # Update transition matrix by normalizing by row sum, since rows of transition matrices
+        # Must add up to 1 in normal prob domain, 0 in log domain, same as softmax
+        # This divides by all other transitions from the left state, which is represented by rows
+        self.transition = transition_counts - np.expand_dims(logsumexp(transition_counts, axis=1), axis=1)
+        
+        # num_states x num_states x 27
+        # Same idea as transition_counts, except for each character
+        emission_counts = np.full((self.num_arcs, len(self.vocab)), fill_value=-inf)
+
+        # For each letter in the alphabet, sum all transition counts that emit that letter
+        for vocab_id in self.vocab.values():
+            # Create a boolean array same size as the lbl_sequment that indicates where each letter is
+            where = np.full((len(lbl_seq)), False)
+            where[self.indices[vocab_id]] = True
+            unc = uncollected[:,where]
+            emission_counts[:,vocab_id] = logsumexp(unc, axis=1)
+
+        # Normalizing across rows, which is the same as p(e,state)/p(state)
+        # This sums over all counts for all letters for each state, since those are the other options
+        # Given the state
+        self.emission = emission_counts - logsumexp(emission_counts, axis=1)
