@@ -21,9 +21,18 @@ class WordHiddenMarkovModel():
 
         num_states: Number of hidden states the HMM has at each time step.
 
-        alt_init: Whether or not to use the alternative initialization.
+        num_arcs: Number of non-null, non-zero probability arcs at each time step.
 
-        train_lbl_seq: List of chars that is the training data, NOT the file path.
+        num_letters: Number of letters in the word. Useful for indexing purposes.
+
+        tot_arcs: Total number of arcs, including null arcs at each time step.
+
+        letters: String that represents which word this HMM models.
+
+        hmms: List of all component letter hmms, used to build this composite HMM.
+
+        vocab: File path of file with label names.
+
         """
 
         # Number of hidden states, 3 for each letter and 5 for each silence
@@ -46,6 +55,7 @@ class WordHiddenMarkovModel():
             lhmm = hmms.get(letter)
             graphemes.append(lhmm)
         graphemes.append(shmm)
+        # Store list of hmm objects
         self.graphemes = graphemes
 
         # Create and initialize params
@@ -67,6 +77,10 @@ class WordHiddenMarkovModel():
     def init_params(self) -> None:
         """
         Get transition and emission probabilities from component HMMs.
+
+        NOTE: I store transition matrices as a vector of all non-zero arc probabilities stacked,
+        including null arcs. I also vertically stack emission probabilities. This is so that I don't
+        have to use sparse matrices.
         """
         transition = []
         emission = []
@@ -74,9 +88,12 @@ class WordHiddenMarkovModel():
             transition.extend(hmm.transition)
             emission.append(hmm.emission)
         # Stack transtion probs on top of each other for arc probabiltiies
+        # NOTE: last null arc row is removed from both arrays because last silence hmm doesn't have one
         self.transition = np.array(transition[:-1])
-        # Vertically stack emission probabilities, TODO remove last null arc row
+        # Vertically stack emission probabilities
         self.emission = np.concatenate(tuple(emission), axis=0)[:-1,:]
+        # Make all emission rows corresponding to null arcs 0. so they don't affect log prob computations
+        self.emission[range(17,self.tot_arcs-17,6),:] = 0.
 
 
     def forward(self, lbl_seq):
@@ -101,10 +118,14 @@ class WordHiddenMarkovModel():
         rep = np.array(rep)
 
         # Numpy array mask to make computation more efficient
+        # Indicates which arc probabilities have to logsumexped to get the alpha prob for the next state
         mask = np.full((self.num_states, self.tot_arcs), fill_value=-inf)
         
+        # First state only has one incoming arc
         mask[0,0] = 0.
+        # Second state has four incoming arcs
         mask[1,[1,4,8,12]] = 0.
+        # Third state has four, and so on
         mask[2,[2,5,9,13]] = 0.
         mask[3,[3,6,10,14]] = 0.
         mask[4,[7,11,15,16]] = 0.
@@ -124,7 +145,7 @@ class WordHiddenMarkovModel():
         mask[j+3,[m+3,m+6,m+10,m+14]] = 0.
         mask[j+4,[m+7,m+11,m+15,m+16]] = 0.
 
-        # Numpy array mask to make computation more efficient
+        # Another mask to do logsumexp for null arcs, more explained below
         mask2 = np.full((self.num_letters+1, self.num_states), fill_value=-inf)
         mask2[0,[4,5]] = 0.
         h=7
@@ -140,37 +161,37 @@ class WordHiddenMarkovModel():
                 # All others 0 (-inf in log)
                 initial_state = 0
                 alphas[initial_state, lbl_id] = 0.
-                #print(alphas[:, lbl_id])
                 continue
             
-            # Vocab id is this character's index in the emission matrix
+            # Vocab id is this character's index in the columns of the emission matrix
             # -1 because uses the prevous emission to calculate this time step's alpha
             vocab_id = self.vocab.get(lbl_seq[lbl_id-1])
 
             # Add emission probs to transition probs of each nonzero arc
-            # This should be length self.num_arcs
+            # This should be length self.tot_arcs
             arc_probs = self.transition + self.emission[:,vocab_id]
-
-            #print(np.exp(arc_probs[range(17,self.tot_arcs-17,6)]))
 
             # Get previous alpha
             a = alphas[:,lbl_id-1]
 
             # Calculate alphas of next step by adding arc probs to previous alphas
-            a = np.repeat(a, rep)
+            a = np.repeat(a, rep) # repeat alphas based on the number of outgoing states
             # zero out the indices corresponding to null arc transitions
             a[range(17,self.tot_arcs-17,6)] = 0.
+            # add alphas to arc_probs
             intmed = a + arc_probs
-            #print(np.exp(intmed[range(17,self.tot_arcs-17,6)]))
 
+            # Create a matrix by copying this array num_states times
+            # Add it to the mask
             intmed = np.tile(intmed, (self.num_states,1)) + mask
+            # Logsumexp such that only the incoming arcs to the next alphas are summed
             intmed = logsumexp(intmed, axis=1)
 
+            # NOW HANDLE NULL ARCS
             # Add null probs to relevant nodes in the new alpha vector
             intmed2 = intmed
-            intmed2[4]+=arc_probs[17]
-            intmed2[range(7,self.num_states-5,3)]+=arc_probs[range(23,self.tot_arcs-17,6)]
-            # Combine arc prob to the node the null arc transitions to
+            intmed2[range(4,self.num_states-5,3)]+=arc_probs[range(17,self.tot_arcs-17,6)]
+            # Logsumexp the arc probability with the node it goes into
             intmed2 = np.tile(intmed2, (self.num_letters+1,1)) + mask2
             intmed[range(5,self.num_states-4,3)] = logsumexp(intmed2, axis=1)
 
@@ -185,6 +206,7 @@ class WordHiddenMarkovModel():
 
 
     def backward(self, lbl_seq):
+        # REPEAT SAME PROCESS AS FORWARD FOR BACKWARD
         betas = np.full((self.num_states, len(lbl_seq)+1), fill_value=-inf)
 
         rep = [1]
@@ -201,19 +223,14 @@ class WordHiddenMarkovModel():
         mask[1,[4,5,6,7]] = 0.
         mask[2,[8,9,10,11]] = 0.
         mask[3,[12,13,14,15]] = 0.
-        mask[4,16] = 0. # add null here
-        #mask[0,[0,1,5,9]] = 0.
-        #mask[1,[2,6,10,13]] = 0.
-        #mask[2,[3,7,11,14]] = 0.
-        #mask[3,[4,8,12,15]] = 0.
-        #mask[4,16] = 0. # add null here
+        mask[4,16] = 0.
 
         m=18
         j=5
         for x in range(self.num_letters):
             mask[j,[m,m+1]] = 0.
             mask[j+1,[m+2,m+3]] = 0.
-            mask[j+2,m+4] = 0. # add null here
+            mask[j+2,m+4] = 0.
             m+=6
             j+=3
 
@@ -221,14 +238,8 @@ class WordHiddenMarkovModel():
         mask[j+1,[m+4,m+5,m+6,m+7]] = 0.
         mask[j+2,[m+8,m+9,m+10,m+11]] = 0.
         mask[j+3,[m+12,m+13,m+14,m+15]] = 0.
-        mask[j+4,m+16] = 0. # add null here
-        #mask[j,[m,m+1,m+5,m+9]] = 0.
-        #mask[j+1,[m+2,m+6,m+10,m+13]] = 0.
-        #mask[j+2,[m+3,m+7,m+11,m+14]] = 0.
-        #mask[j+3,[m+4,m+8,m+12,m+15]] = 0.
-        #mask[j+4,m+16] = 0. # add null here
+        mask[j+4,m+16] = 0.
 
-        # Numpy array mask to make computation more efficient
         mask2 = np.full((self.num_letters+1, self.num_states), fill_value=-inf)
         mask2[0,[4,5]] = 0.
         h=7
@@ -243,7 +254,6 @@ class WordHiddenMarkovModel():
                 # Backward prob of last bottom right hidden state is 1
                 # All others 0, ie -inf
                 betas[-1,lbl_id] = 0.
-                #print(betas[:,lbl_id])
                 continue
 
             # Vocab id is this character's position in the emission matrix
@@ -255,11 +265,12 @@ class WordHiddenMarkovModel():
             arc_probs = self.transition + self.emission[:,vocab_id]
 
             b = betas[:,lbl_id+1]
-            #print(b)
-
-            b_ext = list(b[0:4])
-            b_ext.extend(list(b[1:5])*3)
-            b_ext.extend(list(b[4:5]))
+            
+            # Cannot use a repetition array for betas
+            # Instead repeat manually
+            b_ext = list(b[0:4]) # first four betas go into the first four arcs
+            b_ext.extend(list(b[1:5])*3) # the next four betas go into the next 12 arcs, 4 each
+            b_ext.extend(list(b[4:5])) # and so on
             b_ext.extend(list(np.repeat(b[5:self.num_states-5], 2)))
             b_ext.extend(list(b[self.num_states-5:self.num_states-4]))
             b_ext.extend(list(b[self.num_states-5:self.num_states-1]))
@@ -267,24 +278,14 @@ class WordHiddenMarkovModel():
             b_ext.extend(list(b[self.num_states-1:self.num_states]))
             b = np.array(b_ext)
 
-            #b = np.repeat(b, rep)
-            #print(b)
-            b[range(17,self.tot_arcs-17,6)] = 0.
+            b[range(17,self.tot_arcs-17,6)] = 0. # zero out the arcs
             intmed = b + arc_probs
-            #print(arc_probs)
-            #print(intmed)
 
             intmed = np.tile(intmed, (self.num_states,1)) + mask
-            #print(mask[-4])
-            #print(mask[-3])
-            #print(mask[-2])
-            #print(mask[-1])
             intmed = logsumexp(intmed, axis=1)
-            #print(intmed2)
 
             intmed2 = intmed
-            intmed2[5]+=arc_probs[17]
-            intmed2[range(8,self.num_states-4,3)]+=arc_probs[range(23,self.tot_arcs-17,6)]
+            intmed2[range(5,self.num_states-4,3)]+=arc_probs[range(17,self.tot_arcs-17,6)]
             intmed2 = np.tile(intmed2, (self.num_letters+1,1)) + mask2
             intmed[range(4,self.num_states-5,3)] = logsumexp(intmed2, axis=1)
 
@@ -299,12 +300,14 @@ class WordHiddenMarkovModel():
 
     def collect_counts(self, lbl_seq, alphas, betas, hmms): 
         # Records indices of all instances of each letter in the text
-        # This will be useful when calculating counts for each letter
+        # This will be useful when calculating emission counts for each letter
         self.indices = [np.where(np.array(lbl_seq) == letter)[0] for letter in self.vocab.keys()]
 
         # Counts at each timestep for each transition
+        # Matrix corresponds to each arc at each timestep
         uncollected = np.full((self.tot_arcs, len(lbl_seq)), fill_value=-inf)
 
+        # repetition array for alphas
         rep = [4]*4
         rep.extend([2])
         rep.extend([2]*(self.num_letters*3))
@@ -313,13 +316,9 @@ class WordHiddenMarkovModel():
         rep_a = np.array(rep)
 
         for lbl_id in np.arange(len(lbl_seq)):
-            # Expand alphas to be column vectors and betas to be row
-            # Makes sense because alphas correspond to row index, which corresponds the orgin state
-            # Betas correspond to col index, which corresponds to the destination state
 
             # Add log probs of left alpha, right beta, transition, and emission prob for each transition
-            # Output should be a num_states x num_states matrix for each character in text
-            #uncollected[:,:,char_id] = left_alphas + self.transition + e + right_betas
+            # Output should be a tot_arcs array for each label
             vocab_id = self.vocab.get(lbl_seq[lbl_id])
             arc_probs = self.transition + self.emission[:,vocab_id]
 
@@ -327,6 +326,7 @@ class WordHiddenMarkovModel():
             la = alphas[:,lbl_id]
             rb = betas[:,lbl_id+1]
 
+            # Repeat the alphas and betas as we did in the forward and backward
             la = np.repeat(la, rep_a)
 
             rb_ext = list(rb[0:4])
@@ -342,7 +342,7 @@ class WordHiddenMarkovModel():
             # Add together to get probabilities of going through the arcs in this timestep
             intmed = la + arc_probs + rb
 
-            # Get null counts
+            # NOW HANDLE NULL ARCS
             # prb is previous right betas, ones for the same column of states as current alphas
             prb = betas[:,lbl_id]
             rb_ext = list(prb[0:4])
@@ -355,6 +355,7 @@ class WordHiddenMarkovModel():
             rb_ext.extend(list(prb[self.num_states-1:self.num_states]))
             prb = np.array(rb_ext)
 
+            # Null arc counts require summing the log prob for the left alp
             intmed[range(17,self.tot_arcs-17,6)] = la[range(5,self.num_states-4,3)] + arc_probs[range(17,self.tot_arcs-17,6)] + prb[range(6,self.num_states-3,3)]
 
             uncollected[:,lbl_id] = intmed
@@ -365,15 +366,15 @@ class WordHiddenMarkovModel():
         la = np.repeat(la, rep_a)
         uncollected[range(17,self.tot_arcs-17,6),-1] += la[range(5,self.num_states-4,3)] + arc_probs[range(17,self.tot_arcs-17,6)] + rb[range(6,self.num_states-3,3)]
         
+        # Now go through each hmm and call the collect_counts function
+        # CRITICAL: have to update and return dictionary of component hmms
         sil_hmm = self.graphemes[0]
         sil_hmm.collect_counts(uncollected[0:18], self.indices, len(lbl_seq), self.vocab)
         hmms.update({sil_hmm.letter:sil_hmm})
         m=18
         n=24
-        # Collect counts for each component HMM
         for hmm in self.graphemes[1:-1]:
             hmm.collect_counts(uncollected[m:n], self.indices, len(lbl_seq), self.vocab)
-            # CRITICAL: have to update and return dictionary of component hmms
             hmms.update({hmm.letter:hmm})
             m+=6
             n+=6
